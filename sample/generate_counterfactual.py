@@ -1,0 +1,330 @@
+import argparse
+import datetime
+import json
+import os
+import random
+from pathlib import Path
+
+import yaml
+from tqdm import tqdm
+from transformers import AutoTokenizer, AutoModelForCausalLM
+import re
+
+datetime = datetime.datetime
+
+SIB200_LABEL2ID = {
+    "science/technology": 0,
+    "travel": 1,
+    "politics": 2,
+    "sports": 3,
+    "health": 4,
+    "entertainment": 5,
+    "geography": 6,
+}
+
+SIB200_ID2LABEL = {v: k for k, v in SIB200_LABEL2ID.items()}
+
+def read_jsonl(path: Path):
+    with path.open("r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            yield json.loads(line)
+
+
+def write_jsonl(path: Path, records):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8") as f:
+        for r in records:
+            f.write(json.dumps(r, ensure_ascii=False) + "\n")
+
+
+def safe_int(x):
+    if isinstance(x, int):
+        return x
+    if isinstance(x, str) and x.strip().isdigit():
+        return int(x.strip())
+    return int(x)
+
+
+
+def keep_last_edit_block(text: str, keep_tags: bool = True) -> str:
+    matches = re.findall(r"<edit>(.*?)</edit>", text, flags=re.DOTALL)
+    if not matches:
+        return text.strip()
+
+    last_inner = matches[-1].strip()  # 取最后一个匹配 [web:115]
+    return f"{last_inner}" if keep_tags else last_inner
+
+
+
+def xnli_id2label(i: int) -> str:
+    mapping = {0: "entailment", 1: "neutral", 2: "contradiction"}
+    return mapping[int(i)]
+
+
+def sib200_id2label(i: int) -> str:
+    return SIB200_ID2LABEL[int(i)]
+
+def get_prompt_template(first, second, prediction_label, target_label, language, dataset_name):
+    language_dict = {
+        "en": "English",
+        "de": "German",
+        "ar": "Arabic",
+        "sw": "swahili",
+        "vi": "Vietnamese",
+        "zh": "Chinese",
+        "ru": "Russian",
+    }
+
+    if dataset_name.lower() == "xnli":
+        prompt_template = f"""
+Given two sentences (premise and hypothesis) in {language_dict[language]} and their original relationship, determine whether they
+entail, contradict, or are neutral to each other. Change the premise with minimal edits to achieve
+the target relation from the original one and output the edited premise surrounding by <edit>[premise]</edit> in {language}. 
+Do not make any unnecessary changes.
+
+#####Begin Example####
+
+Original relation: **entailment**
+premise: A woman is talking to a man. 
+hypothesis: Brown-haired woman talking to man with backpack.
+Target relation: **neutral**
+
+Step 1: Identify phrases, words in the premise leading to the entailment relation:
+'man',
+Step 2: Change these phrases, words to get neutral relation with minimal changes:
+'man' to 'student'.
+Step 3: replace the phrases, words from step 1 in the original text by the phrases, words, sentences
+in step 2:
+
+Edited premise: <edit>A woman is talking to a student.</edit>
+
+#####End Example####
+
+Request: Given two sentences (premise and hypothesis) in {language_dict[language]} and their original relationship, determine
+whether they entail, contradict, or are neutral to each other. Change the premise with minimal edits
+to achieve the neutral relation from the original one  and output the edited premise surrounding by 
+<edit>[premise]</edit> in {language_dict[language]}. Do not make any unnecessary changes. Do not add anything else.
+
+Original relation: **{prediction_label}**
+premise: {first}
+hypothesis: {second}
+Target relation: **{target_label}**
+Edited premise: 
+        """
+    else:
+        prompt_template = f"""
+Given a sentence in {language_dict[language]} classified as belonging to one of the topics: 
+"science/technology", "travel", "politics", "sports", "health", "entertainment", "geography". Modify the 
+sentence to change its topic to the specified target topic and output the edited sentence surrounding by 
+<edit>[sentence]</edit> in {language_dict[language]}.
+Do not make any unnecessary changes.
+
+#####Begin Example####
+
+Original topic: **sports**
+Sentence: The athlete set a new record in the marathon.
+Target topic: **health**
+
+Step 1: Identify key phrases or words determining the original topic:
+'athlete', 'record', 'marathon'.
+Step 2: Modify these key phrases or words minimally to reflect the target topic (health):
+'athlete' to 'patient', 'set a new record' to 'showed improvement', 'marathon' to 'rehabilitation'.
+Step 3: Replace the identified words or phrases in the original sentence:
+
+Edited sentence: <edit>The patient showed improvement in the rehabilitation.</edit>
+
+#####End Example####
+
+Request: Given a sentence in {language_dict[language]} classified as belonging to one of the topics: 
+"science/technology", "travel", "politics", "sports", "health", "entertainment", "geography". Modify the 
+sentence to change its topic to the specified target topic and output the edited sentence surrounding by 
+<edit>[sentence]</edit> in {language_dict[language]}.
+Do not make any unnecessary changes.
+
+Original topic: **{prediction_label}**
+Sentence: {first}
+Target topic: **{target_label}**
+Edited sentence: 
+        """
+
+    return prompt_template
+
+
+def get_parser():
+    parser = argparse.ArgumentParser(description="Generate multilingual counterfactual examples from jsonl files.")
+    
+    parser.add_argument("--num_generations", type=int, default=10, help="How many outputs per input.")
+
+    parser.add_argument("--pred_root", type=str, default="../data_qwen_pred", help="Input root dir.")
+    parser.add_argument("--out_root", type=str, default="../data_qwen_sample", help="Output root dir.")
+    parser.add_argument("--dataset_name", type=str, default="sib200", choices=["sib200", "xnli", "XNLI"], help="Dataset.")
+    parser.add_argument("--language", type=str, default="de", help="Language (file name like de.jsonl).")
+
+    parser.add_argument("--split", type=str, default="train", help="Only train is intended; keep as a knob for safety.")
+    parser.add_argument("--max_samples", type=int, default=None, help="Process at most N lines (debug/ablation).")
+
+    parser.add_argument("--model_name_or_path", type=str, default="/root/autodl-tmp/model/Qwen3-8B", help="Model path.")
+    parser.add_argument("--hf_token", type=str, default=os.environ.get("HF_TOKEN_PATH", None), help="HF token if needed.")
+    parser.add_argument("--cache_dir", type=str, default=None, help="Cache dir.")
+    parser.add_argument("--seed", type=int, default=42, help="Random seed.")
+    parser.add_argument("--max_new_tokens", type=int, default=2048, help="Generation length.")
+    parser.add_argument("--save_every", type=int, default=1, help="Write partial results every N samples.")
+
+    return parser
+
+
+def run(args):
+    random.seed(args.seed)
+
+    dataset = args.dataset_name.lower()
+    split = args.split
+    lang = args.language
+
+    in_file = Path(args.pred_root) / dataset / split / f"{lang}.jsonl"
+    if not in_file.exists():
+        raise FileNotFoundError(f"Input file not found: {in_file}")
+
+    now = datetime.now().strftime("%y%m%d_%H%M%S")
+    model_tag = Path(args.model_name_or_path).name
+    run_dir = Path(args.out_root) / dataset / split
+    out_file = run_dir / f"{lang}_{model_tag}_{now}.jsonl"
+    run_dir.mkdir(parents=True, exist_ok=True)
+
+    with (run_dir / "args.yaml").open("w", encoding="utf-8") as f:
+        yaml.dump(vars(args), f, allow_unicode=True)
+
+    tokenizer = AutoTokenizer.from_pretrained(args.model_name_or_path, token=args.hf_token)
+    model = AutoModelForCausalLM.from_pretrained(
+        args.model_name_or_path,
+        device_map="balanced",
+        trust_remote_code=True,
+        revision="main",
+        token=args.hf_token,
+        cache_dir=args.cache_dir,
+    )
+
+    results = []
+    total = 0
+
+    for obj in tqdm(read_jsonl(in_file), desc=f"Processing {in_file.name}"):
+        if args.max_samples is not None and total >= args.max_samples:
+            break
+
+        if dataset == "xnli":
+            premise = obj["premise"][lang]
+            hypothesis = obj["hypothesis"][lang]
+
+            orig_pred_id = safe_int(obj["orig_pred"][lang])
+            target_pred_id = safe_int(obj["target_pred"][lang])
+
+            prediction_label = xnli_id2label(orig_pred_id)
+            target_label = xnli_id2label(target_pred_id)
+
+            prompt = get_prompt_template(
+                first=premise,
+                second=hypothesis,
+                prediction_label=prediction_label,
+                target_label=target_label,
+                language=lang,
+                dataset_name="XNLI",
+            )
+        else:
+            text = obj["text"][lang]
+
+            orig_pred_id = safe_int(obj["orig_pred"][lang])
+            target_pred_id = safe_int(obj["target_pred"][lang])
+
+            prediction_label = sib200_id2label(orig_pred_id)
+            target_label = sib200_id2label(target_pred_id)
+
+            prompt = get_prompt_template(
+                first=text,
+                second=None,
+                prediction_label=prediction_label,
+                target_label=target_label,
+                language=lang,
+                dataset_name="sib200",
+            )
+
+        '''
+        messages = [
+            {"role": "system", "content": "You are an excellent assistant for text editing./no_think"},
+            {"role": "user", "content": prompt},
+        ]
+        '''
+        
+        system_instr = "You are an excellent assistant for text editing./no_think"
+        messages = [
+            {"role": "user", "content": system_instr + "\n\n" + prompt},
+        ]
+        chat_text = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+        model_inputs = tokenizer([chat_text], return_tensors="pt").to(model.device)
+
+        '''
+        generated_ids = model.generate(
+            **model_inputs,
+            max_new_tokens=args.max_new_tokens,
+            do_sample=True,
+            temperature=0.7,
+            top_p=0.8,
+            top_k=20,
+            
+        )
+        generated_ids = [out[len(inp):] for inp, out in zip(model_inputs.input_ids, generated_ids)]
+        response_raw = tokenizer.batch_decode(generated_ids, skip_special_tokens=True)[0].strip()
+        response = keep_last_edit_block(response_raw, keep_tags=True)
+        out_obj = dict(obj)
+        out_obj["counterfactual"] = {lang: response}
+        '''
+        generated = model.generate(
+            **model_inputs,
+            max_new_tokens=args.max_new_tokens,
+            do_sample=True,
+            temperature=1.1,
+            top_p=0.99,
+            top_k=100,
+            num_return_sequences=args.num_generations,
+        )
+
+        # generate 返回形状: (num_return_sequences * batch_size, seq_len) [web:161]
+        input_len = model_inputs.input_ids.shape[1]
+        gen_only = generated[:, input_len:]  # 去掉 prompt 部分
+
+        responses_raw = tokenizer.batch_decode(gen_only, skip_special_tokens=True)
+        responses = [keep_last_edit_block(r.strip(), keep_tags=True) for r in responses_raw]
+        out_obj = dict(obj)
+        out_obj["counterfactual"] = {
+            lang: [{"gen_id": j, "text": r} for j, r in enumerate(responses)]
+        }
+
+            
+        results.append(out_obj)
+        
+        '''
+        tqdm.write(f"==== index={obj.get('index', total)} ====")
+        tqdm.write("----- INPUT (chat_text) -----")
+        tqdm.write(chat_text)
+
+        for j, (rr, r) in enumerate(zip(responses_raw, responses)):
+            tqdm.write(f"----- OUTPUT gen_id={j} (raw) -----")
+            tqdm.write(rr.strip())
+            tqdm.write(f"----- OUTPUT gen_id={j} (cleaned) -----")
+            tqdm.write(r)
+        tqdm.write("")
+        '''
+
+
+        total += 1
+
+        if args.save_every and total % args.save_every == 0:
+            write_jsonl(out_file, results)
+
+    write_jsonl(out_file, results)
+    print(f"Saved {len(results)} samples to: {out_file}")
+
+
+if __name__ == "__main__":
+    run(get_parser().parse_args())
