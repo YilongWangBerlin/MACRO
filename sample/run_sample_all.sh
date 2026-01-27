@@ -6,7 +6,7 @@ set -euo pipefail
 LANGS=("en" "de" "zh")
 
 TASKS=("xnli" "sib200")
-SPLITS=("train" "test" "validation")
+SPLITS=("train")
 
 PRED_ROOT="../data_qwen_pred"
 OUT_DIR="../data_qwen_sample"
