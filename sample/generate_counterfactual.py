@@ -9,6 +9,7 @@ import yaml
 from tqdm import tqdm
 from transformers import AutoTokenizer, AutoModelForCausalLM
 import re
+import torch
 
 datetime = datetime.datetime
 
@@ -158,15 +159,15 @@ def get_parser():
     
     parser.add_argument("--num_generations", type=int, default=10, help="How many outputs per input.")
 
-    parser.add_argument("--pred_root", type=str, default="../data_qwen_pred", help="Input root dir.")
-    parser.add_argument("--out_root", type=str, default="../data_qwen_sample", help="Output root dir.")
+    parser.add_argument("--pred_root", type=str, default="./data_qwen_pred", help="Input root dir.")
+    parser.add_argument("--out_root", type=str, default="./data_qwen_sample", help="Output root dir.")
     parser.add_argument("--dataset_name", type=str, default="sib200", choices=["sib200", "xnli", "XNLI"], help="Dataset.")
     parser.add_argument("--language", type=str, default="de", help="Language (file name like de.jsonl).")
 
     parser.add_argument("--split", type=str, default="train", help="Only train is intended; keep as a knob for safety.")
     parser.add_argument("--max_samples", type=int, default=None, help="Process at most N lines (debug/ablation).")
 
-    parser.add_argument("--model_name_or_path", type=str, default="/root/autodl-tmp/model/Qwen3-8B", help="Model path.")
+    parser.add_argument("--model_name_or_path", type=str, default="Qwen/Qwen3-8B", help="Model path.")
     parser.add_argument("--hf_token", type=str, default=os.environ.get("HF_TOKEN_PATH", None), help="HF token if needed.")
     parser.add_argument("--cache_dir", type=str, default=None, help="Cache dir.")
     parser.add_argument("--seed", type=int, default=42, help="Random seed.")
@@ -204,6 +205,7 @@ def run(args):
         revision="main",
         token=args.hf_token,
         cache_dir=args.cache_dir,
+        torch_dtype=torch.bfloat16
     )
 
     results = []
@@ -287,6 +289,7 @@ def run(args):
             top_p=0.99,
             top_k=100,
             num_return_sequences=args.num_generations,
+            pad_token_id=model.config.pad_token_id,
         )
 
         # generate 返回形状: (num_return_sequences * batch_size, seq_len) [web:161]
