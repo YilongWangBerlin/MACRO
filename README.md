@@ -1,4 +1,4 @@
-# TODO:
+
 
 ## Models
 
@@ -45,3 +45,14 @@ chmod +x run_sample_all.sh
 ```
 
 check model path
+
+## 3. Reward Calculation
+
+Terminal in /reward
+
+run:
+```
+bash run_sample_all.sh
+```
+
+See reward distribution in /reward/test.ipynb
