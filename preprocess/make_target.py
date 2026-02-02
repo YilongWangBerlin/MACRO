@@ -2,52 +2,34 @@
 # -*- coding: utf-8 -*-
 
 """
-Add `target_pred` to jsonl files under ../data_qwen_pred.
+Add `target_pred` to jsonl files under data_root.
 
-NEW:
 - If orig_pred is invalid (None / non-int / out of range), re-predict it locally
-  using the same prompt & generation setting you provided (Gemma/Qwen style).
+  using constrained-label decoding (label words, not digits).
 - Then sample target_pred with constraints:
   target_pred != label and target_pred != orig_pred
 - For non-English languages, prefer matching en target_pred for same index;
   if conflict, sample a valid target randomly.
 
-This script processes: {xnli,sib200}/{train,validation,test}/*.jsonl
-and overwrites files in-place (via atomic replace).
+Processes: {xnli,sib200}/{train,validation,test}/*.jsonl
+Overwrites files in-place (atomic replace).
 """
 
 import os
-import re
 import json
 import random
+import argparse
 from pathlib import Path
-from typing import Dict, List, Optional, Any
+from typing import Dict, List, Optional, Any, Tuple
 
-# ---------- optional: only needed when repair happens ----------
 import torch
 from transformers import AutoTokenizer, AutoModelForCausalLM
 
-# ----------------------------
-# Configuration
-# ----------------------------
 
-DATA_ROOT = Path("../data_qwen_pred")
-DATASETS = ["xnli", "sib200"]
-SPLITS = ["train", "validation", "test"]
-LANGS = ["en", "ar", "de", "ru", "sw", "vi", "zh"]
-
+# ----------------------------
+# Label specs
+# ----------------------------
 NUM_LABELS = {"xnli": 3, "sib200": 7}
-RANDOM_SEED = 569
-
-REPAIR_ENABLED = True
-REPAIR_MODEL_DIR = "/root/autodl-tmp/model/gemma-2-9b-it"
-REPAIR_DEVICE_MAP = "auto"
-REPAIR_DTYPE = "bfloat16"  # "float16"/"bfloat16"/"float32"
-REPAIR_USE_CHAT_TEMPLATE = True
-REPAIR_MAX_NEW_TOKENS = 1
-REPAIR_TEMPERATURE = 0.0
-REPAIR_MAX_RETRIES = 3
-
 
 SIB200_LABEL2ID = {
     "science/technology": 0,
@@ -58,13 +40,25 @@ SIB200_LABEL2ID = {
     "entertainment": 5,
     "geography": 6,
 }
+SIB200_ID2LABEL = {v: k for k, v in SIB200_LABEL2ID.items()}
 
-_INT_RE = re.compile(r"(-?\d+)")
+XNLI_ID2LABEL = {0: "entailment", 1: "neutral", 2: "contradiction"}
+XNLI_LABEL2ID = {v: k for k, v in XNLI_ID2LABEL.items()}
+
+LANG_CODE2NAME = {
+    "en": "English",
+    "ar": "Arabic",
+    "de": "German",
+    "ru": "Russian",
+    "sw": "Swahili",
+    "vi": "Vietnamese",
+    "zh": "Chinese",
+}
+
 
 # ----------------------------
 # IO Helpers
 # ----------------------------
-
 def read_jsonl(path: Path) -> List[dict]:
     items = []
     with path.open("r", encoding="utf-8") as f:
@@ -86,28 +80,15 @@ def write_jsonl_atomic(path: Path, items: List[dict]) -> None:
             f.write(json.dumps(obj, ensure_ascii=False) + "\n")
     os.replace(tmp_path, path)
 
+
 # ----------------------------
-# Pred parsing / validation
+# Pred validation / extraction
 # ----------------------------
-
-def parse_first_int(s: str) -> Optional[int]:
-    if s is None:
-        return None
-    m = _INT_RE.search(str(s).strip())
-    if not m:
-        return None
-    try:
-        return int(m.group(1))
-    except Exception:
-        return None
-
-
 def is_valid_pred(v: Any, num_labels: int) -> bool:
     return isinstance(v, int) and 0 <= v < num_labels
 
 
 def get_pred_from_fields(obj: dict, lang: str, num_labels: int) -> Optional[int]:
-    # 1) orig_pred[lang]
     d = obj.get("orig_pred", {})
     if isinstance(d, dict) and lang in d:
         v = d[lang]
@@ -117,21 +98,12 @@ def get_pred_from_fields(obj: dict, lang: str, num_labels: int) -> Optional[int]
             vv = int(v.strip())
             if is_valid_pred(vv, num_labels):
                 return vv
-        # v could be None -> fallthrough
-
-    # 2) try parse from orig_pred_text[lang]
-    dt = obj.get("orig_pred_text", {})
-    if isinstance(dt, dict) and lang in dt:
-        vv = parse_first_int(dt.get(lang))
-        if is_valid_pred(vv, num_labels):
-            return vv
-
     return None
 
-# ----------------------------
-# Repair predictor (lazy)
-# ----------------------------
 
+# ----------------------------
+# Generation utils
+# ----------------------------
 def _torch_dtype(name: str):
     if name == "float16":
         return torch.float16
@@ -140,119 +112,322 @@ def _torch_dtype(name: str):
     return torch.float32
 
 
+def _normalize_eos_id(tokenizer) -> int:
+    eos_id = tokenizer.eos_token_id
+    if isinstance(eos_id, (list, tuple)):
+        if len(eos_id) == 0:
+            raise RuntimeError("tokenizer.eos_token_id is empty list/tuple")
+        eos_id = eos_id[0]
+    if not isinstance(eos_id, int):
+        raise RuntimeError(f"tokenizer.eos_token_id is not int after normalize, got {type(eos_id)}")
+    return eos_id
+
+
+def encode_prompt(tokenizer, prompt_text: str, use_chat_template: bool = True) -> Dict[str, torch.Tensor]:
+    if use_chat_template and hasattr(tokenizer, "apply_chat_template"):
+        messages = [{"role": "user", "content": prompt_text}]
+        enc = tokenizer.apply_chat_template(
+            messages,
+            return_tensors="pt",
+            return_dict=True,
+            add_generation_prompt=True,
+        )
+    else:
+        enc = tokenizer(prompt_text, return_tensors="pt", add_special_tokens=True)
+
+    if isinstance(enc, torch.Tensor):
+        return {"input_ids": enc}
+    if hasattr(enc, "input_ids") and isinstance(enc.input_ids, torch.Tensor):
+        out = {"input_ids": enc.input_ids}
+        if hasattr(enc, "attention_mask") and isinstance(enc.attention_mask, torch.Tensor):
+            out["attention_mask"] = enc.attention_mask
+        return out
+    if isinstance(enc, dict):
+        return enc
+    raise TypeError(f"Unexpected encode output type: {type(enc)}")
+
+
+def normalize_label_text(s: str) -> str:
+    return (s or "").strip().lower()
+
+
+# ----------------------------
+# Constrained decoding trie
+# ----------------------------
+class LabelTrie:
+    def __init__(self):
+        self.children: Dict[int, "LabelTrie"] = {}
+        self.is_end: bool = False
+
+    def insert(self, token_seq: List[int]) -> None:
+        node = self
+        for t in token_seq:
+            if t not in node.children:
+                node.children[t] = LabelTrie()
+            node = node.children[t]
+        node.is_end = True
+
+    def next_tokens(self, prefix: List[int]) -> Tuple[bool, List[int]]:
+        node = self
+        for t in prefix:
+            if t not in node.children:
+                return (False, [])
+            node = node.children[t]
+        return (node.is_end, list(node.children.keys()))
+
+
+def _unique_token_seqs(tokenizer, label: str) -> List[List[int]]:
+    variants = [label, " " + label, "\n" + label]
+    out = []
+    seen = set()
+    for v in variants:
+        ids = tokenizer.encode(v, add_special_tokens=False)
+        if not ids:
+            continue
+        key = tuple(ids)
+        if key not in seen:
+            seen.add(key)
+            out.append(ids)
+    return out
+
+
+def build_label_trie(tokenizer, labels: List[str]) -> Tuple[LabelTrie, int]:
+    trie = LabelTrie()
+    max_len = 0
+    for lab in labels:
+        for seq in _unique_token_seqs(tokenizer, lab):
+            trie.insert(seq)
+            max_len = max(max_len, len(seq))
+    return trie, max_len
+
+
+def make_prefix_allowed_tokens_fn(trie: LabelTrie, prompt_len: int, eos_token_id: int):
+    # Compatible with HF versions that call fn(batch_id, sent) where sent is 1D.
+    def _fn(batch_id: int, input_ids: torch.Tensor) -> List[int]:
+        if isinstance(input_ids, torch.Tensor):
+            if input_ids.ndim == 2:
+                seq = input_ids[batch_id].tolist()
+            elif input_ids.ndim == 1:
+                seq = input_ids.tolist()
+            elif input_ids.ndim == 0:
+                seq = [int(input_ids.item())]
+            else:
+                seq = input_ids.reshape(-1).tolist()
+        else:
+            if isinstance(input_ids, int):
+                seq = [input_ids]
+            else:
+                seq = list(input_ids)
+
+        cut = prompt_len if prompt_len <= len(seq) else len(seq)
+        gen_prefix = seq[cut:]
+
+        is_end, nxt = trie.next_tokens(gen_prefix)
+        if nxt:
+            return nxt
+        if is_end:
+            return [eos_token_id]
+        return [eos_token_id]
+    return _fn
+
+
+# ----------------------------
+# Candidate token-level logits
+# ----------------------------
+def score_label_candidates_token_logits(model, tokenizer, prompt_input_ids, prompt_attention_mask, candidate_labels):
+    device = prompt_input_ids.device
+    pad_id = tokenizer.pad_token_id if tokenizer.pad_token_id is not None else _normalize_eos_id(tokenizer)
+
+    prompt_ids = prompt_input_ids[0].tolist()
+    prompt_len = len(prompt_ids)
+
+    cand_token_ids = []
+    for lab in candidate_labels:
+        ids = tokenizer.encode(lab, add_special_tokens=False)
+        if not ids:
+            ids = tokenizer.encode(" " + lab, add_special_tokens=False)
+        cand_token_ids.append(ids)
+
+    max_total = max(prompt_len + len(ids) for ids in cand_token_ids)
+    bs = len(candidate_labels)
+
+    input_ids = torch.full((bs, max_total), pad_id, dtype=torch.long, device=device)
+    attn = torch.zeros((bs, max_total), dtype=torch.long, device=device)
+
+    for i, ids in enumerate(cand_token_ids):
+        seq = prompt_ids + ids
+        input_ids[i, :len(seq)] = torch.tensor(seq, dtype=torch.long, device=device)
+        attn[i, :len(seq)] = 1
+
+    with torch.inference_mode():
+        out = model(input_ids=input_ids, attention_mask=attn)
+        logits = out.logits  # [bs, T, vocab]
+
+    result = {}
+    for i, lab in enumerate(candidate_labels):
+        ids = cand_token_ids[i]
+        tok_logits = []
+        for j, tok_id in enumerate(ids):
+            pos = prompt_len + j
+            tok_logits.append(float(logits[i, pos - 1, tok_id].item()))
+        result[lab] = {
+            "token_ids": ids,
+            "token_logits": tok_logits,
+            "sum_token_logits": float(sum(tok_logits)),
+        }
+    return result
+
+
+# ----------------------------
+# Prompts
+# ----------------------------
+def build_prompt_xnli(lang: str, premise: str, hypothesis: str) -> str:
+    lang_name = LANG_CODE2NAME.get(lang, lang)
+    system = (
+        "You are a multilingual Natural Language Inference (NLI) classifier.\n"
+        "You must output exactly ONE label word from this closed set:\n"
+        "entailment\nneutral\ncontradiction\n\n"
+        "Output rules:\n"
+        "- Output exactly one of the label words above.\n"
+        "- No extra words, punctuation, quotes, spaces, or newlines.\n\n"
+        "Example:\n"
+        "Language: English\n"
+        "Premise: A dog is running in the park.\n"
+        "Hypothesis: An animal is running outdoors.\n"
+        "Label: entailment\n"
+    )
+    user = (
+        f"Language: {lang_name}\n"
+        f"Premise: {premise}\n"
+        f"Hypothesis: {hypothesis}\n"
+        "Label:"
+    )
+    return system + "\n\n" + user
+
+
+def build_prompt_sib200(lang: str, text: str) -> str:
+    lang_name = LANG_CODE2NAME.get(lang, lang)
+    labels = list(SIB200_LABEL2ID.keys())
+    label_block = "\n".join(labels)
+    system = (
+        "You are a multilingual topic classifier for short news sentences.\n"
+        "You must output exactly ONE label word from this closed set:\n"
+        f"{label_block}\n\n"
+        "Output rules:\n"
+        "- Output exactly one label from the set above.\n"
+        "- No extra words, punctuation, quotes, spaces, or newlines.\n\n"
+        "Example:\n"
+        "Language: English\n"
+        "Text: The prime minister announced new election dates.\n"
+        "Label: politics\n"
+    )
+    user = (
+        f"Language: {lang_name}\n"
+        f"Text: {text}\n"
+        "Label:"
+    )
+    return system + "\n\n" + user
+
+
+# ----------------------------
+# Repair predictor (with args)
+# ----------------------------
 class RepairPredictor:
-    def __init__(self, model_dir: str):
+    def __init__(
+        self,
+        model_dir: str,
+        device_map: str,
+        dtype: str,
+        use_chat_template: bool,
+        max_new_tokens: int,
+        temperature: float,
+        max_tries: int,
+    ):
         self.model_dir = model_dir
+        self.device_map = device_map
+        self.dtype = dtype
+        self.use_chat_template = use_chat_template
+        self.max_new_tokens = max_new_tokens
+        self.temperature = temperature
+        self.max_tries = max_tries
+
         self.tokenizer = None
         self.model = None
 
     def ensure_loaded(self):
         if self.model is not None and self.tokenizer is not None:
             return
-        self.tokenizer = AutoTokenizer.from_pretrained(
-            self.model_dir,
-            trust_remote_code=True,
-        )
+        self.tokenizer = AutoTokenizer.from_pretrained(self.model_dir, trust_remote_code=True)
         self.model = AutoModelForCausalLM.from_pretrained(
             self.model_dir,
-            device_map=REPAIR_DEVICE_MAP,
-            torch_dtype=_torch_dtype(REPAIR_DTYPE),
+            device_map=self.device_map,
+            torch_dtype=_torch_dtype(self.dtype),
             trust_remote_code=True,
         )
-        # pad safety
-        if self.tokenizer.pad_token_id is None and self.tokenizer.eos_token_id is not None:
-            self.tokenizer.pad_token = self.tokenizer.eos_token
+        eos_id = _normalize_eos_id(self.tokenizer)
+        if self.tokenizer.pad_token_id is None:
+            self.tokenizer.pad_token_id = eos_id
 
-    def encode_prompt(self, prompt_text: str):
-        if REPAIR_USE_CHAT_TEMPLATE and hasattr(self.tokenizer, "apply_chat_template"):
-            # 注意：Gemma-*-it 不支持 system role，这里只用 user role。[web:1]
-            messages = [{"role": "user", "content": prompt_text}]
-            enc = self.tokenizer.apply_chat_template(
-                messages,
-                return_tensors="pt",
-                return_dict=True,
-                add_generation_prompt=True,  # 让模板补上“开始生成”的标记。[web:106]
-            )
-            return enc
-        else:
-            return self.tokenizer(prompt_text, return_tensors="pt", add_special_tokens=True)
-
-    def generate_text(self, prompt_text: str) -> str:
+    def predict_label_text(self, prompt_text: str, allowed_labels: List[str]) -> Tuple[str, Dict[str, Any]]:
         self.ensure_loaded()
-        enc = self.encode_prompt(prompt_text)
+        eos_id = _normalize_eos_id(self.tokenizer)
+
+        enc = encode_prompt(self.tokenizer, prompt_text, use_chat_template=self.use_chat_template)
         input_ids = enc["input_ids"]
         attn = enc.get("attention_mask", None)
 
-        # move to model device (works for single-GPU; device_map=auto handled by HF internally for generate)
         if hasattr(self.model, "device") and str(self.model.device) != "meta":
             input_ids = input_ids.to(self.model.device)
             if attn is not None:
                 attn = attn.to(self.model.device)
 
         prompt_len = input_ids.shape[1]
+        trie, max_lab_len = build_label_trie(self.tokenizer, allowed_labels)
+        prefix_fn = make_prefix_allowed_tokens_fn(trie, prompt_len, eos_id)
 
-        with torch.inference_mode():
-            out = self.model.generate(
-                input_ids=input_ids,
-                attention_mask=attn,
-                max_new_tokens=REPAIR_MAX_NEW_TOKENS,
-                do_sample=False if REPAIR_TEMPERATURE <= 0 else True,
-                temperature=None if REPAIR_TEMPERATURE <= 0 else REPAIR_TEMPERATURE,
-                top_p=1.0,
-                num_return_sequences=1,
-                pad_token_id=self.tokenizer.pad_token_id,
-                eos_token_id=self.tokenizer.eos_token_id,
-            )
+        do_sample = self.temperature is not None and self.temperature > 0
+        gen_max_new = max(self.max_new_tokens, max_lab_len + 2)
 
-        gen_ids = out[0][prompt_len:]
-        return self.tokenizer.decode(gen_ids, skip_special_tokens=True).strip()
+        last = ""
+        for _ in range(self.max_tries):
+            with torch.inference_mode():
+                out = self.model.generate(
+                    input_ids=input_ids,
+                    attention_mask=attn,
+                    max_new_tokens=gen_max_new,
+                    do_sample=do_sample,
+                    temperature=self.temperature if do_sample else None,
+                    top_p=1.0,
+                    num_return_sequences=1,
+                    return_dict_in_generate=True,
+                    output_scores=True,
+                    prefix_allowed_tokens_fn=prefix_fn,
+                    pad_token_id=self.tokenizer.pad_token_id,
+                    eos_token_id=eos_id,
+                )
+            seq = out.sequences[0]
+            gen_ids = seq[prompt_len:]
+            last = self.tokenizer.decode(gen_ids, skip_special_tokens=True)
+            lab = normalize_label_text(last)
+            if lab in [x.lower() for x in allowed_labels]:
+                cand_logits = score_label_candidates_token_logits(
+                    model=self.model,
+                    tokenizer=self.tokenizer,
+                    prompt_input_ids=input_ids,
+                    prompt_attention_mask=attn,
+                    candidate_labels=allowed_labels,
+                )
+                return lab, cand_logits
 
-# ----------------------------
-# Prompts (same as you provided)
-# ----------------------------
-
-def build_prompt_xnli(lang: str, premise: str, hypothesis: str) -> str:
-    system = (
-        "You are a multilingual natural language inference (NLI) classifier./no_think\n"
-        "Task: Given a Premise and a Hypothesis in the SAME language, output their relation label.\n"
-        "Labels (output exactly ONE digit):\n"
-        "0 = entailment (Premise makes Hypothesis definitely true)\n"
-        "1 = neutral (not enough info; could be true or false)\n"
-        "2 = contradiction (Premise makes Hypothesis definitely false)\n"
-        "Rules:\n"
-        "- Output MUST be exactly one digit (0/1/2).\n"
-        "- Do NOT output words, punctuation, spaces, or newlines."
-    )
-    user = (
-        f"Language: {lang}\n"
-        f"Premise: {premise}\n"
-        f"Hypothesis: {hypothesis}\n"
-        "Label: "
-    )
-    return system + "\n\n" + user
-
-
-def build_prompt_sib200(lang: str, text: str) -> str:
-    mapping_lines = "\n".join([f"{k} -> {v}" for k, v in SIB200_LABEL2ID.items()])
-    system = (
-        "You are a multilingual topic classifier for short news sentences./no_think\n"
-        "Assign exactly one topic label ID (0-6) to the given news text.\n"
-        "Label mapping:\n"
-        f"{mapping_lines}\n"
-        "Guidelines:\n"
-        "- Choose the single best topic that the text is mainly about.\n"
-        "- If multiple topics appear, pick the primary event/subject.\n"
-        "- If unsure, pick the closest single topic.\n\n"
-        "Output rules:\n"
-        "- Output EXACTLY ONE character from {0,1,2,3,4,5,6}.\n"
-        "- Do NOT output words, punctuation, spaces, or newlines."
-    )
-    user = (
-        f"Language: {lang}\n"
-        f"Text: {text}\n"
-        "Label: "
-    )
-    return system + "\n\n" + user
+        cand_logits = score_label_candidates_token_logits(
+            model=self.model,
+            tokenizer=self.tokenizer,
+            prompt_input_ids=input_ids,
+            prompt_attention_mask=attn,
+            candidate_labels=allowed_labels,
+        )
+        best = max(allowed_labels, key=lambda x: cand_logits[x]["sum_token_logits"])
+        return best, cand_logits
 
 
 def repredict_if_needed(
@@ -260,54 +435,40 @@ def repredict_if_needed(
     dataset: str,
     lang: str,
     predictor: RepairPredictor,
+    repair_enabled: bool,
 ) -> int:
     num_labels = NUM_LABELS[dataset]
     pred = get_pred_from_fields(obj, lang, num_labels=num_labels)
     if pred is not None:
-        # write back normalized int
         obj.setdefault("orig_pred", {})[lang] = int(pred)
         return int(pred)
 
-    if not REPAIR_ENABLED:
-        raise RuntimeError(f"Invalid orig_pred and REPAIR_DISABLED, index={obj.get('index')} lang={lang}")
+    if not repair_enabled:
+        raise RuntimeError(f"Invalid orig_pred and repair disabled, index={obj.get('index')} lang={lang}")
 
-    # build prompt from existing fields in pred jsonl
     if dataset == "xnli":
         premise = obj.get("premise", {}).get(lang)
         hypothesis = obj.get("hypothesis", {}).get(lang)
         if premise is None or hypothesis is None:
             raise RuntimeError(f"Missing premise/hypothesis for repair, index={obj.get('index')} lang={lang}")
         prompt = build_prompt_xnli(lang, premise, hypothesis)
+        allowed = ["entailment", "neutral", "contradiction"]
+        label_text, cand_logits = predictor.predict_label_text(prompt, allowed)
+        pred_id = XNLI_LABEL2ID[label_text]
     else:
         text = obj.get("text", {}).get(lang)
         if text is None:
             raise RuntimeError(f"Missing text for repair, index={obj.get('index')} lang={lang}")
         prompt = build_prompt_sib200(lang, text)
+        allowed = list(SIB200_LABEL2ID.keys())
+        label_text, cand_logits = predictor.predict_label_text(prompt, allowed)
+        pred_id = SIB200_LABEL2ID[label_text]
 
-    last_text = None
-    for _ in range(REPAIR_MAX_RETRIES):
-        last_text = predictor.generate_text(prompt)
-        pred2 = parse_first_int(last_text)
-        if is_valid_pred(pred2, num_labels):
-            obj.setdefault("orig_pred", {})[lang] = int(pred2)
-            obj.setdefault("orig_pred_text", {})[lang] = last_text
-            return int(pred2)
+    obj.setdefault("orig_pred", {})[lang] = int(pred_id)
+    obj.setdefault("orig_pred_text", {})[lang] = label_text
+    obj.setdefault("orig_pred_candidate_logits", {})[lang] = cand_logits
+    return int(pred_id)
 
-    # fallback: random valid pred (different from label if possible)
-    label = obj.get("label", None)
-    candidates = list(range(num_labels))
-    if isinstance(label, int) and 0 <= label < num_labels and num_labels > 1:
-        candidates = [c for c in candidates if c != label] or list(range(num_labels))
-    pred3 = random.choice(candidates)
-
-    obj.setdefault("orig_pred", {})[lang] = int(pred3)
-    obj.setdefault("orig_pred_text", {})[lang] = last_text if last_text is not None else ""
-    obj.setdefault("repair_warning", {})[lang] = "repredict_failed_fallback_random"
-    return int(pred3)
-
-# ----------------------------
-# Target sampling
-# ----------------------------
 
 def choose_target(num_labels: int, label: int, orig_pred: int, preferred: Optional[int] = None) -> int:
     excluded = {label, orig_pred}
@@ -319,7 +480,7 @@ def choose_target(num_labels: int, label: int, orig_pred: int, preferred: Option
     return random.choice(candidates)
 
 
-def build_en_target_map(items: List[dict], dataset: str, predictor: RepairPredictor) -> Dict[int, int]:
+def build_en_target_map(items: List[dict], dataset: str, predictor: RepairPredictor, repair_enabled: bool) -> Dict[int, int]:
     num_labels = NUM_LABELS[dataset]
     mp: Dict[int, int] = {}
     for obj in items:
@@ -330,15 +491,21 @@ def build_en_target_map(items: List[dict], dataset: str, predictor: RepairPredic
         if label is None:
             raise RuntimeError(f"Missing 'label' for index={idx}")
 
-        orig_pred = repredict_if_needed(obj, dataset=dataset, lang="en", predictor=predictor)
-
+        orig_pred = repredict_if_needed(obj, dataset=dataset, lang="en", predictor=predictor, repair_enabled=repair_enabled)
         en_target = choose_target(num_labels=num_labels, label=label, orig_pred=orig_pred, preferred=None)
         mp[idx] = en_target
         obj["target_pred"] = {"en": en_target}
     return mp
 
 
-def apply_targets_for_lang(items: List[dict], dataset: str, lang: str, en_target_map: Dict[int, int], predictor: RepairPredictor) -> None:
+def apply_targets_for_lang(
+    items: List[dict],
+    dataset: str,
+    lang: str,
+    en_target_map: Dict[int, int],
+    predictor: RepairPredictor,
+    repair_enabled: bool,
+) -> None:
     num_labels = NUM_LABELS[dataset]
     for obj in items:
         idx = obj.get("index", None)
@@ -348,15 +515,21 @@ def apply_targets_for_lang(items: List[dict], dataset: str, lang: str, en_target
         if label is None:
             raise RuntimeError(f"Missing 'label' for index={idx}")
 
-        orig_pred = repredict_if_needed(obj, dataset=dataset, lang=lang, predictor=predictor)
-
+        orig_pred = repredict_if_needed(obj, dataset=dataset, lang=lang, predictor=predictor, repair_enabled=repair_enabled)
         preferred = en_target_map.get(idx, None)
         tgt = choose_target(num_labels=num_labels, label=label, orig_pred=orig_pred, preferred=preferred)
         obj["target_pred"] = {lang: tgt}
 
 
-def process_split(dataset: str, split: str, predictor: RepairPredictor) -> None:
-    split_dir = DATA_ROOT / dataset / split
+def process_split(
+    data_root: Path,
+    dataset: str,
+    split: str,
+    langs: List[str],
+    predictor: RepairPredictor,
+    repair_enabled: bool,
+) -> None:
+    split_dir = data_root / dataset / split
     if not split_dir.exists():
         print(f"[skip] Missing directory: {split_dir}")
         return
@@ -367,11 +540,11 @@ def process_split(dataset: str, split: str, predictor: RepairPredictor) -> None:
         return
 
     en_items = read_jsonl(en_path)
-    en_target_map = build_en_target_map(en_items, dataset=dataset, predictor=predictor)
+    en_target_map = build_en_target_map(en_items, dataset=dataset, predictor=predictor, repair_enabled=repair_enabled)
     write_jsonl_atomic(en_path, en_items)
     print(f"[ok] Wrote targets: {en_path}")
 
-    for lang in LANGS:
+    for lang in langs:
         if lang == "en":
             continue
         path = split_dir / f"{lang}.jsonl"
@@ -380,24 +553,71 @@ def process_split(dataset: str, split: str, predictor: RepairPredictor) -> None:
             continue
 
         items = read_jsonl(path)
-        apply_targets_for_lang(items, dataset=dataset, lang=lang, en_target_map=en_target_map, predictor=predictor)
+        apply_targets_for_lang(
+            items,
+            dataset=dataset,
+            lang=lang,
+            en_target_map=en_target_map,
+            predictor=predictor,
+            repair_enabled=repair_enabled,
+        )
         write_jsonl_atomic(path, items)
         print(f"[ok] Wrote targets: {path}")
 
 
 def main() -> None:
-    random.seed(RANDOM_SEED)
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--data_root", type=str, default="../data_qwen_pred_demo")
+    ap.add_argument("--datasets", nargs="+", default=["xnli", "sib200"])
+    ap.add_argument("--splits", nargs="+", default=["train", "validation", "test"])
+    ap.add_argument("--langs", nargs="+", default=["en", "ar", "de", "ru", "sw", "vi", "zh"])
 
-    if not DATA_ROOT.exists():
-        raise RuntimeError(f"DATA_ROOT does not exist: {DATA_ROOT.resolve()}")
+    ap.add_argument("--seed", type=int, default=569)
 
-    predictor = RepairPredictor(REPAIR_MODEL_DIR)
+    ap.add_argument("--repair_enabled", action="store_true")
+    ap.add_argument("--no_repair", dest="repair_enabled", action="store_false")
+    ap.set_defaults(repair_enabled=True)
 
-    for dataset in DATASETS:
-        if dataset not in NUM_LABELS:
-            raise RuntimeError(f"NUM_LABELS not configured for dataset={dataset}")
-        for split in SPLITS:
-            process_split(dataset=dataset, split=split, predictor=predictor)
+    ap.add_argument("--repair_model_dir", type=str, default="/root/autodl-tmp/model/gemma-2-9b-it")
+    ap.add_argument("--device_map", type=str, default="auto")
+    ap.add_argument("--dtype", type=str, default="bfloat16", choices=["float16", "bfloat16", "float32"])
+    ap.add_argument("--use_chat_template", action="store_true")
+    ap.add_argument("--max_new_tokens", type=int, default=8)
+    ap.add_argument("--temperature", type=float, default=0.0)
+    ap.add_argument("--max_tries", type=int, default=50)
+
+    args = ap.parse_args()
+
+    random.seed(args.seed)
+
+    data_root = Path(args.data_root)
+    if not data_root.exists():
+        raise RuntimeError(f"data_root does not exist: {data_root.resolve()}")
+
+    for ds in args.datasets:
+        if ds not in NUM_LABELS:
+            raise RuntimeError(f"Unknown dataset: {ds}")
+
+    predictor = RepairPredictor(
+        model_dir=args.repair_model_dir,
+        device_map=args.device_map,
+        dtype=args.dtype,
+        use_chat_template=args.use_chat_template,
+        max_new_tokens=args.max_new_tokens,
+        temperature=args.temperature,
+        max_tries=args.max_tries,
+    )
+
+    for dataset in args.datasets:
+        for split in args.splits:
+            process_split(
+                data_root=data_root,
+                dataset=dataset,
+                split=split,
+                langs=args.langs,
+                predictor=predictor,
+                repair_enabled=args.repair_enabled,
+            )
 
 
 if __name__ == "__main__":
