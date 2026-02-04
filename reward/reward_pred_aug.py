@@ -149,16 +149,7 @@ def call_sample_and_logprob_local(
     restricted_token_ids: Optional[List[int]] = None,
     prefer_raw_logits: bool = True,
 ) -> Dict[str, Any]:
-    """
-    Run model.generate() once and return:
-    - generated text
-    - per-step logprobs for generated tokens
-    - per-step token logits for generated tokens (optional)
-    - per-step restricted logits for specified token ids (optional)
-    Notes:
-    - If the transformers version supports output_logits, we try to return raw logits;
-      otherwise we fall back to outputs.scores.
-    """
+
     model.eval()
 
     enc = encode_prompt(tokenizer, prompt_text, use_chat_template=use_chat_template)
@@ -276,10 +267,7 @@ def predict_with_confidence(
     max_new_tokens: int = 8,
     temperature: float = 0.0,
 ) -> Dict[str, Any]:
-    """
-    No teacher-forcing / no extra forward pass.
-    We compute label logits from generate() step-0 scores for the FIRST token of each label.
-    """
+
     labels = get_labels(task)
     label_first_token_ids = [_label_first_token_id(tokenizer, lb) for lb in labels]
 
