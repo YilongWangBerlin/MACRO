@@ -1,0 +1,13 @@
+cache_dir: null
+dataset_name: xnli
+hf_token: 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
+language: en
+max_new_tokens: 2048
+max_samples: null
+model_name_or_path: google/gemma-3-12b-it
+num_generations: 10
+out_root: ./data_gemma12_sample
+pred_root: ./data_gemma12_pred
+save_every: 1
+seed: 42
+split: train
