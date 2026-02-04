@@ -1,5 +1,3 @@
-# process_all_rewards_stream.py
-
 import argparse
 import json
 from pathlib import Path
@@ -17,7 +15,6 @@ from reward_pred_aug import eval_one_example
 from reward_edit_lev import reward_edit
 from reward_align_nllb import load_nllb, nllb_ce_loss_and_reward, LANG2NLLB
 
-
 LANGS_ALLOWED = ["en", "ar", "de", "ru", "sw", "vi", "zh"]
 
 
@@ -34,14 +31,12 @@ def read_jsonl(path: Path) -> List[Dict[str, Any]]:
 
 
 def infer_task_split_from_path(p: Path) -> Tuple[str, str]:
-    # .../data_qwen_sample/{task}/{split}/{lang}_Qwen3-8B_*.jsonl
     split = p.parent.name
     task = p.parent.parent.name
     return task, split
 
 
 def find_en_file(folder: Path) -> Path:
-    # same folder as current lang file
     cands = sorted(folder.glob("en_*.jsonl"))
     if not cands:
         raise FileNotFoundError(f"Cannot find en_*.jsonl under {folder}")
@@ -72,7 +67,6 @@ def main():
     ap.add_argument("--in_root", type=str, default="../data_qwen_sample")
     ap.add_argument("--out_root", type=str, default="../data_qwen_reward")
 
-    # NEW: language filter
     ap.add_argument(
         "--langs",
         nargs="+",
@@ -81,27 +75,22 @@ def main():
         help="Only process these langs, e.g. --langs zh en. Default: all allowed langs.",
     )
 
-    # Qwen classifier
     ap.add_argument("--local_model_dir", type=str, default="/root/autodl-tmp/model/Qwen3-8B")
     ap.add_argument("--device_map", type=str, default="auto")
     ap.add_argument("--dtype", type=str, default="bfloat16", choices=["float16", "bfloat16", "float32"])
     ap.add_argument("--local_files_only", action="store_true")
     ap.add_argument("--use_chat_template", action="store_true")
 
-    # Alignment model (NLLB)
     ap.add_argument("--nllb_model_name", type=str, default="/root/autodl-tmp/model/nllb-200-distilled-1.3B")
-    ap.add_argument("--do_align", action="store_true", default=True, help="Compute R_align (needs matching English file).")
+    ap.add_argument("--do_align", action="store_true", default=True)
 
-    # streaming controls
-    ap.add_argument("--resume", action="store_true", help="Resume by skipping already-written lines in output jsonl.")
-    ap.add_argument("--max_examples", type=int, default=None, help="Optional cap per input file.")
+    ap.add_argument("--resume", action="store_true")
+    ap.add_argument("--max_examples", type=int, default=None)
     args = ap.parse_args()
 
-    # resolve paths robustly
     in_root = Path(args.in_root).expanduser().resolve()
     out_root = Path(args.out_root).expanduser().resolve()
 
-    # NEW: final language set
     langs_to_run = set(args.langs) if args.langs is not None else set(LANGS_ALLOWED)
 
     if args.dtype == "float16":
@@ -111,7 +100,6 @@ def main():
     else:
         torch_dtype = torch.float32
 
-    # load Qwen classifier once
     tokenizer = AutoTokenizer.from_pretrained(
         args.local_model_dir,
         trust_remote_code=True,
@@ -125,17 +113,13 @@ def main():
         local_files_only=args.local_files_only,
     )
 
-    # load NLLB once (optional)
     nllb_model = None
     nllb_tok = None
     if args.do_align:
         nllb_model, nllb_tok = load_nllb(args.nllb_model_name, device_map=args.device_map, dtype=args.dtype)
 
-    # iterate all jsonl
     jsonl_paths = sorted(in_root.rglob("*.jsonl"))
 
-
-    # estimate global total for global ETA
     eligible_paths: List[Path] = []
     global_total = 0
     for p in jsonl_paths:
@@ -182,7 +166,6 @@ def main():
             if remaining <= 0:
                 continue
 
-            # load english anchor once per file if needed
             if args.do_align and lang != "en":
                 try:
                     en_path = find_en_file(p.parent)
@@ -209,10 +192,10 @@ def main():
                     try:
                         ex = json.loads(line)
 
-                        # 1) pred/conf/flip/aug for orig + every cf
+                        # 1) only process counterfactuals: pred/conf/flip/aug on each cf
                         eval_one_example(task, lang, ex, model, tokenizer, use_chat_template=args.use_chat_template)
 
-                        # 2) edit reward
+                        # 2) edit reward (orig x comes from jsonl; we compare cf text vs orig text/premise)
                         if task == "sib200":
                             x = ex["text"][lang]
                         else:

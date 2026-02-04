@@ -1,8 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-#langs=(en ar de ru sw vi zh)
-langs=(en de zh)
+langs=(en ar de ru sw vi zh)
 
 IN_ROOT="../data_qwen_sample"
 OUT_ROOT="../data_qwen_reward"

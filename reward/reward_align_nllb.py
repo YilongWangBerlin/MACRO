@@ -1,13 +1,12 @@
 import argparse
 from typing import Dict, List, Tuple, Optional
 
+import math
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 from transformers import AutoTokenizer, AutoModelForSeq2SeqLM
 
 loss_fn = nn.CrossEntropyLoss(reduction="none")
-
 
 LANG2NLLB = {
     "en": "eng_Latn",
@@ -20,6 +19,10 @@ LANG2NLLB = {
 }
 
 
+def sigmoid(x: float) -> float:
+    return 1.0 / (1.0 + math.exp(-x))
+
+
 def nllb_ce_loss_and_reward(
     model,
     tokenizer,
@@ -28,7 +31,6 @@ def nllb_ce_loss_and_reward(
     src_lang: str,
     tgt_lang: str = "eng_Latn",
     max_length: int = 512,
-    eps: float = 1e-6,
 ) -> Tuple[List[float], List[float]]:
     assert len(src_texts) == len(tgt_texts)
 
@@ -41,7 +43,6 @@ def nllb_ce_loss_and_reward(
         max_length=max_length,
     ).to(model.device)
 
-    # tokenize target; common practice: switch src_lang to target lang before tokenizing labels
     tokenizer.src_lang = tgt_lang
     y = tokenizer(
         tgt_texts,
@@ -55,7 +56,7 @@ def nllb_ce_loss_and_reward(
     labels[labels == tokenizer.pad_token_id] = -100
 
     with torch.no_grad():
-        out = model(**x, labels=labels)  # teacher forcing
+        out = model(**x, labels=labels)
         logits = out.logits  # [B, T, V]
 
     losses: List[float] = []
@@ -63,19 +64,26 @@ def nllb_ce_loss_and_reward(
     for i in range(logits.size(0)):
         li = logits[i].view(-1, logits.size(-1))
         yi = labels[i].view(-1)
-        token_losses = loss_fn(li, yi)  # [-100] positions ignored by CE internally? No, CE will error if -100 present.
-        # So we must mask manually
+
+        # CrossEntropyLoss can't take -100 with reduction="none" safely here; mask manually
+        # We compute per-token CE then mask out -100 positions.
+        token_losses = loss_fn(li, yi)
         mask = (yi != -100).float()
         token_losses = token_losses * mask
         denom = float(mask.sum().item()) if float(mask.sum().item()) > 0 else 1.0
         ce = float(token_losses.sum().item() / denom)
+
         losses.append(ce)
-        rewards.append(float(1.0 / (ce + eps)))
+        rewards.append(float(sigmoid(-ce)))   # NEW: sigmoid(-ce)
 
     return losses, rewards
 
 
-def load_nllb(model_name: str = "/root/autodl-tmp/model/nllb-200-distilled-1.3B", device_map: str = "auto", dtype: str = "bfloat16"):
+def load_nllb(
+    model_name: str = "/root/autodl-tmp/model/nllb-200-distilled-1.3B",
+    device_map: str = "auto",
+    dtype: str = "bfloat16",
+):
     if dtype == "float16":
         torch_dtype = torch.float16
     elif dtype == "bfloat16":
@@ -83,7 +91,7 @@ def load_nllb(model_name: str = "/root/autodl-tmp/model/nllb-200-distilled-1.3B"
     else:
         torch_dtype = torch.float32
 
-    tok = AutoTokenizer.from_pretrained(model_name,local_files_only=True)
+    tok = AutoTokenizer.from_pretrained(model_name, local_files_only=True)
     mdl = AutoModelForSeq2SeqLM.from_pretrained(model_name, device_map=device_map, torch_dtype=torch_dtype)
     return mdl, tok
 
@@ -100,7 +108,10 @@ def main():
 
     model, tokenizer = load_nllb(args.model_name, args.device_map, args.dtype)
     src = LANG2NLLB[args.src_lang]
-    losses, rewards = nllb_ce_loss_and_reward(model, tokenizer, [args.src_text], [args.tgt_text], src_lang=src, tgt_lang="eng_Latn")
+    losses, rewards = nllb_ce_loss_and_reward(
+        model, tokenizer, [args.src_text], [args.tgt_text],
+        src_lang=src, tgt_lang="eng_Latn"
+    )
     print({"ce_loss": losses[0], "reward_align": rewards[0]})
 
 
