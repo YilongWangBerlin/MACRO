@@ -72,7 +72,7 @@ def keep_last_edit_block(text: str, keep_tags: bool = True) -> str:
     if not matches:
         return text.strip()
 
-    last_inner = matches[-1].strip()  # 取最后一个匹配 [web:115]
+    last_inner = matches[-1].strip()
     return f"{last_inner}" if keep_tags else last_inner
 
 
@@ -336,9 +336,8 @@ def run(args):
             pad_token_id=model.config.pad_token_id,
         )
 
-        # generate 返回形状: (num_return_sequences * batch_size, seq_len) [web:161]
         input_len = model_inputs.input_ids.shape[1]
-        gen_only = generated[:, input_len:]  # 去掉 prompt 部分
+        gen_only = generated[:, input_len:]
 
         responses_raw = tokenizer.batch_decode(gen_only, skip_special_tokens=True)
         responses = [keep_last_edit_block(r.strip(), keep_tags=False) for r in responses_raw]

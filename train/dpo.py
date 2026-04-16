@@ -535,7 +535,6 @@ def main(args):
     if args.gradient_checkpointing:
         model.gradient_checkpointing_enable()
         
-    # ---- TRL workaround: Gemma* 只做文本任务时，强制走 text tokenize_row ----
     
     
     orig_model_type = getattr(model.config, "model_type", None)

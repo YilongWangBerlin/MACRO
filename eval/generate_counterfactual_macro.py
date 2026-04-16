@@ -75,7 +75,7 @@ def keep_last_edit_block(text: str, keep_tags: bool = True) -> str:
     if not matches:
         return text.strip()
     last_inner = matches[-1].strip()
-    return f"<edit>{last_inner}</edit>" if keep_tags else last_inner  # 小修：保留标签
+    return f"<edit>{last_inner}</edit>" if keep_tags else last_inner
 
 
 

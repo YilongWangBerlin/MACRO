@@ -730,7 +730,6 @@ def main():
                     if not isinstance(ex, dict):
                         raise TypeError(f"TAXI1500 example is not dict, got type={type(ex)} value={repr(ex)[:200]}")
 
-                    # taxi1500 格式：ex["text"] 是 dict，包含 en/ar/de/ru/sw/vi/zh
                     text = ex["text"][args.lang] if isinstance(ex.get("text"), dict) and args.lang in ex["text"] else str(ex.get("text", ""))
                     prompt_text = build_prompt_taxi1500(args.lang, text)
 
