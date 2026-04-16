@@ -13,7 +13,6 @@ MACRO is a framework for multilingual counterfactual generation in text classifi
 The pipeline consists of three stages: counterfactual candidate sampling, preference pair ranking, and DPO-based preference alignment. It first generates multiple counterfactual candidates, then ranks them with scores, and finally trains the model to prefer better counterfactuals over worse ones.
 
 
-```
 
 ## Setup
 
