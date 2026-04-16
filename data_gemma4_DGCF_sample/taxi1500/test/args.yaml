@@ -1,0 +1,16 @@
+adapter_name: default
+adapter_path: null
+cache_dir: null
+dataset_name: taxi1500
+hf_token: null
+language: th
+max_new_tokens: 2048
+max_samples: null
+merge_lora: false
+model_name_or_path: google/gemma-3-4b-it
+num_generations: 1
+out_root: ./data_gemma4_DGCF_sample
+pred_root: ./data_gemma4_pred
+save_every: 1
+seed: 42
+split: test

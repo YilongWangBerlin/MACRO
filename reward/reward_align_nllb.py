@@ -16,6 +16,12 @@ LANG2NLLB = {
     "sw": "swh_Latn",
     "vi": "vie_Latn",
     "zh": "zho_Hans",
+    "bg": "Bulgarian",
+    "el": "Greek",
+    "es": "Spanish",
+    "hi": "Hindi",
+    "th": "Thai",
+    "tr": "Turkish",
 }
 
 
@@ -80,7 +86,7 @@ def nllb_ce_loss_and_reward(
 
 
 def load_nllb(
-    model_name: str = "/root/autodl-tmp/model/nllb-200-distilled-1.3B",
+    model_name: str = "facebook/nllb-200-distilled-1.3B",
     device_map: str = "auto",
     dtype: str = "bfloat16",
 ):
@@ -91,8 +97,8 @@ def load_nllb(
     else:
         torch_dtype = torch.float32
 
-    tok = AutoTokenizer.from_pretrained(model_name, local_files_only=True)
-    mdl = AutoModelForSeq2SeqLM.from_pretrained(model_name, device_map=device_map, torch_dtype=torch_dtype)
+    tok = AutoTokenizer.from_pretrained(model_name,local_files_only=False)
+    mdl = AutoModelForSeq2SeqLM.from_pretrained(model_name, device_map=device_map, torch_dtype=torch_dtype, weights_only=False)
     return mdl, tok
 
 

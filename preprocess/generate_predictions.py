@@ -9,7 +9,7 @@ import torch
 from transformers import AutoTokenizer, AutoModelForCausalLM
 
 
-LANGS_ALLOWED = ["en", "ar", "de", "ru", "sw", "vi", "zh"]
+LANGS_ALLOWED = ["en", "ar", "de", "ru", "sw", "vi", "zh", "bg", "el", "es", "hi", "th", "tr"]
 
 LANG_CODE2NAME = {
     "en": "English",
@@ -19,6 +19,12 @@ LANG_CODE2NAME = {
     "sw": "Swahili",
     "vi": "Vietnamese",
     "zh": "Chinese",
+    "bg": "Bulgarian",
+    "el": "Greek",
+    "es": "Spanish",
+    "hi": "Hindi",
+    "th": "Thai",
+    "tr": "Turkish",
 }
 
 
@@ -41,13 +47,26 @@ SIB200_ID2LABEL = {v: k for k, v in SIB200_LABEL2ID.items()}
 XNLI_ID2LABEL = {0: "entailment", 1: "neutral", 2: "contradiction"}
 XNLI_LABEL2ID = {v: k for k, v in XNLI_ID2LABEL.items()}
 
+TAXI1500_LABEL2ID = {
+    "recommendation": 0,
+    "faith": 1,
+    "violence": 2,
+    "grace": 3,
+    "sin": 4,
+    "description": 5,
+}
+TAXI1500_ID2LABEL = {v: k for k, v in TAXI1500_LABEL2ID.items()}
+
 DEFAULT_LIMITS = {
     ("xnli", "train"): 1500,
     ("xnli", "test"): 400,
     ("xnli", "validation"): 500,
     ("sib200", "train"): 1500,
-    ("sib200", "test"): 99,
+    ("sib200", "test"): 204,
     ("sib200", "validation"): 99,
+    ("taxi1500", "train"): 1500,
+    ("taxi1500", "test"): 400,
+    ("taxi1500", "validation"): 500,
 }
 
 
@@ -216,6 +235,31 @@ def build_prompt_sib200(lang_code: str, text: str) -> str:
 
 
 
+def build_prompt_taxi1500(lang_code: str, text: str) -> str:
+    lang_name = LANG_CODE2NAME.get(lang_code, lang_code)
+    labels = list(TAXI1500_LABEL2ID.keys())
+    label_block = ", ".join(labels)
+
+    system = (
+        "You are a multilingual verse classifier. /no_think\n"
+        "Output exactly one label with no additional text."
+    )
+
+    user = (
+        f"Classify the category of this {lang_name} verse/text.\n\n"
+        f"Available labels: {label_block}\n\n"
+        "Rules:\n"
+        "• Choose the single best label\n"
+        "• Output only the label word exactly as provided\n\n"
+        "Example:\n"
+        "Text: Love your neighbor as yourself.\n"
+        "Answer: recommendation\n\n"
+        "Now classify:\n"
+        f"Text: {text}\n"
+        "Answer: "
+    )
+
+    return system + "\n\n" + user
 
 
 
@@ -505,14 +549,14 @@ def predict_label_constrained(
 # -----------------------------
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--task", choices=["xnli", "sib200"], required=True)
+    ap.add_argument("--task", choices=["xnli", "sib200","taxi1500"], required=True)
     ap.add_argument("--split", choices=["train", "test", "validation"], required=True)
     ap.add_argument("--lang", choices=LANGS_ALLOWED, required=True)
 
-    ap.add_argument("--data_dir", type=str, default="../data")
-    ap.add_argument("--out_dir", type=str, default="../data_qwen_pred")
+    ap.add_argument("--data_dir", type=str, default="./data")
+    ap.add_argument("--out_dir", type=str, default="./data_qwen_pred")
 
-    ap.add_argument("--local_model_dir", type=str, default="/root/autodl-tmp/model/Qwen3-8B")
+    ap.add_argument("--local_model_dir", type=str, default="Qwen/Qwen3-8B")
     ap.add_argument("--device_map", type=str, default="auto")
     ap.add_argument("--dtype", type=str, default="bfloat16", choices=["float16", "bfloat16", "float32"])
     ap.add_argument("--local_files_only", action="store_true")
@@ -546,11 +590,19 @@ def main():
             "validation": "xnli/validation_set.json",
         }[args.split]
         data_path = data_dir / fn
-    else:
+    elif args.task == "sib200":
         fn = {
             "train": "sib200/sib200_train.json",
             "test": "sib200/sib200_test.json",
             "validation": "sib200/sib200_validation.json",
+        }[args.split]
+        data_path = data_dir / fn
+
+    else:  # taxi1500
+        fn = {
+            "train": "taxi1500/taxi1500_train.json",
+            "test": "taxi1500/taxi1500_test.json",
+            "validation": "taxi1500/taxi1500_validation.json",
         }[args.split]
         data_path = data_dir / fn
 
@@ -560,6 +612,7 @@ def main():
         args.local_model_dir,
         trust_remote_code=True,
         local_files_only=args.local_files_only,
+        token=os.environ.get("HF_TOKEN_PATH", None)
     )
     model = AutoModelForCausalLM.from_pretrained(
         args.local_model_dir,
@@ -567,6 +620,7 @@ def main():
         torch_dtype=torch_dtype,
         trust_remote_code=True,
         local_files_only=args.local_files_only,
+        token=os.environ.get("HF_TOKEN_PATH", None)
     )
 
     eos_id = _normalize_eos_id(tokenizer)
@@ -627,7 +681,7 @@ def main():
                     if "fallback_warning" in pred_pack:
                         out_obj.setdefault("warning", {})[args.lang] = pred_pack["fallback_warning"]
 
-                else:
+                elif args.task == "sib200":
                     if not isinstance(ex, dict):
                         raise TypeError(f"SIB200 example is not dict, got type={type(ex)} value={repr(ex)[:200]}")
 
@@ -663,6 +717,54 @@ def main():
 
                     out_obj = {
                         "index": ex.get("index", i),
+                        "text": {args.lang: text},
+                        "label": ex.get("label", None),
+                        "orig_pred": {args.lang: pred_id},
+                        "orig_pred_text": {args.lang: pred_label},
+                        "orig_pred_candidate_logits": {args.lang: cand_logits},
+                    }
+                    if "fallback_warning" in pred_pack:
+                        out_obj.setdefault("warning", {})[args.lang] = pred_pack["fallback_warning"]
+                        
+                else:  # taxi1500
+                    if not isinstance(ex, dict):
+                        raise TypeError(f"TAXI1500 example is not dict, got type={type(ex)} value={repr(ex)[:200]}")
+
+                    # taxi1500 格式：ex["text"] 是 dict，包含 en/ar/de/ru/sw/vi/zh
+                    text = ex["text"][args.lang] if isinstance(ex.get("text"), dict) and args.lang in ex["text"] else str(ex.get("text", ""))
+                    prompt_text = build_prompt_taxi1500(args.lang, text)
+
+                    labels = list(TAXI1500_LABEL2ID.keys())
+                    pred_pack = predict_label_constrained(
+                        model=model,
+                        tokenizer=tokenizer,
+                        prompt_text=prompt_text,
+                        labels=labels,
+                        max_new_tokens=args.max_tokens,
+                        temperature=args.temperature,
+                        use_chat_template=args.use_chat_template,
+                    )
+
+                    pred_label = pred_pack["label_text"].strip()
+                    pred_id = TAXI1500_LABEL2ID.get(pred_label, None)
+
+                    enc = encode_prompt(tokenizer, prompt_text, use_chat_template=args.use_chat_template)
+                    if hasattr(model, "device") and str(model.device) != "meta":
+                        enc["input_ids"] = enc["input_ids"].to(model.device)
+                        if "attention_mask" in enc:
+                            enc["attention_mask"] = enc["attention_mask"].to(model.device)
+
+                    cand_logits = score_label_candidates_token_logits(
+                        model=model,
+                        tokenizer=tokenizer,
+                        prompt_input_ids=enc["input_ids"],
+                        prompt_attention_mask=enc.get("attention_mask", None),
+                        candidate_labels=labels,
+                    )
+
+                    out_obj = {
+                        "index": ex.get("index", i),
+                        "id": ex.get("id", None),
                         "text": {args.lang: text},
                         "label": ex.get("label", None),
                         "orig_pred": {args.lang: pred_id},

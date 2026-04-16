@@ -25,11 +25,18 @@ def levenshtein_distance(a: str, b: str) -> int:
 
 
 def reward_edit(x_hat: str, x: str) -> float:
+    
     if x is None:
         return 0.0
     if len(x) == 0:
         return 0.0
+    
     d = levenshtein_distance(x_hat, x)
+    
     r = 1.0 - (d / float(len(x)))
-    # allow negative if very different, or clamp if you prefer
+
+    
+    #print(f"[EDIT_DEBUG] d={d} len(x)={len(x)} r={r:.3f}")
+    #print(f"[EDIT_DEBUG] x     = {x}")
+    #print(f"[EDIT_DEBUG] x_hat = {x_hat}")
     return float(r)

@@ -13,17 +13,34 @@ import torch
 
 datetime = datetime.datetime
 
+
+
 SIB200_LABEL2ID = {
-    "science/technology": 0,
-    "travel": 1,
-    "politics": 2,
-    "sports": 3,
-    "health": 4,
-    "entertainment": 5,
-    "geography": 6,
+    "entertainment": 0,
+    "geography": 1,
+    "health": 2,
+    "politics": 3,
+    "science/technology": 4,
+    "sports": 5,
+    "travel": 6,
 }
 
 SIB200_ID2LABEL = {v: k for k, v in SIB200_LABEL2ID.items()}
+
+TAXI1500_LABEL2ID = {
+    "recommendation": 0,
+    "faith": 1,
+    "violence": 2,
+    "grace": 3,
+    "sin": 4,
+    "description": 5,
+}
+TAXI1500_ID2LABEL = {v: k for k, v in TAXI1500_LABEL2ID.items()}
+
+def taxi1500_id2label(i: int) -> str:
+    return TAXI1500_ID2LABEL[int(i)]
+
+
 
 def read_jsonl(path: Path):
     with path.open("r", encoding="utf-8") as f:
@@ -82,9 +99,8 @@ def get_prompt_template(first, second, prediction_label, target_label, language,
     if dataset_name.lower() == "xnli":
         prompt_template = f"""
 Given two sentences (premise and hypothesis) in {language_dict[language]} and their original relationship, determine whether they
-entail, contradict, or are neutral to each other. Change the premise with minimal edits to achieve
+entail, contradict, or are neutral to each other. Change the premise to achieve
 the target relation from the original one and output the edited premise surrounding by <edit>[premise]</edit> in {language}. 
-Do not make any unnecessary changes.
 
 #####Begin Example####
 
@@ -95,7 +111,7 @@ Target relation: **neutral**
 
 Step 1: Identify phrases, words in the premise leading to the entailment relation:
 'man',
-Step 2: Change these phrases, words to get neutral relation with minimal changes:
+Step 2: Change these phrases, words to get neutral relation:
 'man' to 'student'.
 Step 3: replace the phrases, words from step 1 in the original text by the phrases, words, sentences
 in step 2:
@@ -105,9 +121,9 @@ Edited premise: <edit>A woman is talking to a student.</edit>
 #####End Example####
 
 Request: Given two sentences (premise and hypothesis) in {language_dict[language]} and their original relationship, determine
-whether they entail, contradict, or are neutral to each other. Change the premise with minimal edits
+whether they entail, contradict, or are neutral to each other. Change the premise 
 to achieve the neutral relation from the original one  and output the edited premise surrounding by 
-<edit>[premise]</edit> in {language_dict[language]}. Do not make any unnecessary changes. Do not add anything else.
+<edit>[premise]</edit> in {language_dict[language]}.
 
 Original relation: **{prediction_label}**
 premise: {first}
@@ -115,13 +131,12 @@ hypothesis: {second}
 Target relation: **{target_label}**
 Edited premise: 
         """
-    else:
+    elif dataset_name.lower() == "sib200":
         prompt_template = f"""
 Given a sentence in {language_dict[language]} classified as belonging to one of the topics: 
 "science/technology", "travel", "politics", "sports", "health", "entertainment", "geography". Modify the 
 sentence to change its topic to the specified target topic and output the edited sentence surrounding by 
 <edit>[sentence]</edit> in {language_dict[language]}.
-Do not make any unnecessary changes.
 
 #####Begin Example####
 
@@ -131,7 +146,7 @@ Target topic: **health**
 
 Step 1: Identify key phrases or words determining the original topic:
 'athlete', 'record', 'marathon'.
-Step 2: Modify these key phrases or words minimally to reflect the target topic (health):
+Step 2: Modify these key phrases or words to reflect the target topic (health):
 'athlete' to 'patient', 'set a new record' to 'showed improvement', 'marathon' to 'rehabilitation'.
 Step 3: Replace the identified words or phrases in the original sentence:
 
@@ -143,12 +158,43 @@ Request: Given a sentence in {language_dict[language]} classified as belonging t
 "science/technology", "travel", "politics", "sports", "health", "entertainment", "geography". Modify the 
 sentence to change its topic to the specified target topic and output the edited sentence surrounding by 
 <edit>[sentence]</edit> in {language_dict[language]}.
-Do not make any unnecessary changes.
+
 
 Original topic: **{prediction_label}**
 Sentence: {first}
 Target topic: **{target_label}**
 Edited sentence: 
+        """
+    
+    else:  # taxi1500
+        prompt_template = f"""
+Given a verse/text in {language_dict[language]} classified as belonging to one of the labels:
+"recommendation", "faith", "violence", "grace", "sin", "description".
+Modify the text to change its label to the specified target label and output ONLY the edited text surrounded by
+<edit>[text]</edit> in {language_dict[language]}.
+
+#####Begin Example####
+
+Original label: **faith**
+Text: Trust in God and do not be afraid.
+Target label: **recommendation**
+
+Step 1: Identify key phrases or words determining the original label:
+'Trust in God', 'do not be afraid'
+Step 2: Modify these phrases to reflect the target label (recommendation):
+Replace with advice/actionable guidance.
+Step 3: Replace the identified parts in the original text.
+
+Edited text: <edit>Be kind to others and forgive those who wrong you.</edit>
+
+#####End Example####
+
+Request: Modify the following text in {language_dict[language]} to achieve the target label from the original one.
+
+Original label: **{prediction_label}**
+Text: {first}
+Target label: **{target_label}**
+Edited text:
         """
 
     return prompt_template
@@ -159,9 +205,9 @@ def get_parser():
     
     parser.add_argument("--num_generations", type=int, default=10, help="How many outputs per input.")
 
-    parser.add_argument("--pred_root", type=str, default="./data_qwen_pred", help="Input root dir.")
-    parser.add_argument("--out_root", type=str, default="./data_qwen_sample", help="Output root dir.")
-    parser.add_argument("--dataset_name", type=str, default="sib200", choices=["sib200", "xnli", "XNLI"], help="Dataset.")
+    parser.add_argument("--pred_root", type=str, default="./data_qwen_pred_new", help="Input root dir.")
+    parser.add_argument("--out_root", type=str, default="./data_qwen_sample_no_min", help="Output root dir.")
+    parser.add_argument("--dataset_name", type=str, default="sib200", choices=["sib200", "xnli", "taxi1500"], help="Dataset.")
     parser.add_argument("--language", type=str, default="de", help="Language (file name like de.jsonl).")
 
     parser.add_argument("--split", type=str, default="train", help="Only train is intended; keep as a knob for safety.")
@@ -233,7 +279,7 @@ def run(args):
                 language=lang,
                 dataset_name="XNLI",
             )
-        else:
+        elif dataset == "sib200":
             text = obj["text"][lang]
 
             orig_pred_id = safe_int(obj["orig_pred"][lang])
@@ -250,13 +296,26 @@ def run(args):
                 language=lang,
                 dataset_name="sib200",
             )
+            
+        else:  # taxi1500
+            text = obj["text"][lang]
 
-        '''
-        messages = [
-            {"role": "system", "content": "You are an excellent assistant for text editing./no_think"},
-            {"role": "user", "content": prompt},
-        ]
-        '''
+            orig_pred_id = safe_int(obj["orig_pred"][lang])
+            target_pred_id = safe_int(obj["target_pred"][lang])
+
+            prediction_label = taxi1500_id2label(orig_pred_id)
+            target_label = taxi1500_id2label(target_pred_id)
+
+            prompt = get_prompt_template(
+                first=text,
+                second=None,
+                prediction_label=prediction_label,
+                target_label=target_label,
+                language=lang,
+                dataset_name="taxi1500",
+            )
+
+
         
         system_instr = "You are an excellent assistant for text editing./no_think"
         messages = [
@@ -265,22 +324,7 @@ def run(args):
         chat_text = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
         model_inputs = tokenizer([chat_text], return_tensors="pt").to(model.device)
 
-        '''
-        generated_ids = model.generate(
-            **model_inputs,
-            max_new_tokens=args.max_new_tokens,
-            do_sample=True,
-            temperature=0.7,
-            top_p=0.8,
-            top_k=20,
-            
-        )
-        generated_ids = [out[len(inp):] for inp, out in zip(model_inputs.input_ids, generated_ids)]
-        response_raw = tokenizer.batch_decode(generated_ids, skip_special_tokens=True)[0].strip()
-        response = keep_last_edit_block(response_raw, keep_tags=True)
-        out_obj = dict(obj)
-        out_obj["counterfactual"] = {lang: response}
-        '''
+
         generated = model.generate(
             **model_inputs,
             max_new_tokens=args.max_new_tokens,
@@ -297,7 +341,7 @@ def run(args):
         gen_only = generated[:, input_len:]  # 去掉 prompt 部分
 
         responses_raw = tokenizer.batch_decode(gen_only, skip_special_tokens=True)
-        responses = [keep_last_edit_block(r.strip(), keep_tags=True) for r in responses_raw]
+        responses = [keep_last_edit_block(r.strip(), keep_tags=False) for r in responses_raw]
         out_obj = dict(obj)
         out_obj["counterfactual"] = {
             lang: [{"gen_id": j, "text": r} for j, r in enumerate(responses)]
@@ -306,19 +350,6 @@ def run(args):
             
         results.append(out_obj)
         
-        '''
-        tqdm.write(f"==== index={obj.get('index', total)} ====")
-        tqdm.write("----- INPUT (chat_text) -----")
-        tqdm.write(chat_text)
-
-        for j, (rr, r) in enumerate(zip(responses_raw, responses)):
-            tqdm.write(f"----- OUTPUT gen_id={j} (raw) -----")
-            tqdm.write(rr.strip())
-            tqdm.write(f"----- OUTPUT gen_id={j} (cleaned) -----")
-            tqdm.write(r)
-        tqdm.write("")
-        '''
-
 
         total += 1
 

@@ -29,7 +29,8 @@ from transformers import AutoTokenizer, AutoModelForCausalLM
 # ----------------------------
 # Label specs
 # ----------------------------
-NUM_LABELS = {"xnli": 3, "sib200": 7}
+NUM_LABELS = {"xnli": 3, "sib200": 7, "taxi1500": 6}
+
 
 SIB200_LABEL2ID = {
     "science/technology": 0,
@@ -44,6 +45,16 @@ SIB200_ID2LABEL = {v: k for k, v in SIB200_LABEL2ID.items()}
 
 XNLI_ID2LABEL = {0: "entailment", 1: "neutral", 2: "contradiction"}
 XNLI_LABEL2ID = {v: k for k, v in XNLI_ID2LABEL.items()}
+
+TAXI1500_LABEL2ID = {
+    "recommendation": 0,
+    "faith": 1,
+    "violence": 2,
+    "grace": 3,
+    "sin": 4,
+    "description": 5,
+}
+TAXI1500_ID2LABEL = {v: k for k, v in TAXI1500_LABEL2ID.items()}
 
 LANG_CODE2NAME = {
     "en": "English",
@@ -328,6 +339,29 @@ def build_prompt_sib200(lang: str, text: str) -> str:
     )
     return system + "\n\n" + user
 
+def build_prompt_taxi1500(lang: str, text: str) -> str:
+    lang_name = LANG_CODE2NAME.get(lang, lang)
+    labels = list(TAXI1500_LABEL2ID.keys())
+    label_block = "\n".join(labels)
+    system = (
+        "You are a multilingual verse classifier.\n"
+        "You must output exactly ONE label word from this closed set:\n"
+        f"{label_block}\n\n"
+        "Output rules:\n"
+        "- Output exactly one label from the set above.\n"
+        "- No extra words, punctuation, quotes, spaces, or newlines.\n\n"
+        "Example:\n"
+        "Language: English\n"
+        "Text: Love your neighbor as yourself.\n"
+        "Label: recommendation\n"
+    )
+    user = (
+        f"Language: {lang_name}\n"
+        f"Text: {text}\n"
+        "Label:"
+    )
+    return system + "\n\n" + user
+
 
 # ----------------------------
 # Repair predictor (with args)
@@ -455,7 +489,7 @@ def repredict_if_needed(
         allowed = ["entailment", "neutral", "contradiction"]
         label_text, cand_logits = predictor.predict_label_text(prompt, allowed)
         pred_id = XNLI_LABEL2ID[label_text]
-    else:
+    elif dataset == "sib200":
         text = obj.get("text", {}).get(lang)
         if text is None:
             raise RuntimeError(f"Missing text for repair, index={obj.get('index')} lang={lang}")
@@ -463,6 +497,14 @@ def repredict_if_needed(
         allowed = list(SIB200_LABEL2ID.keys())
         label_text, cand_logits = predictor.predict_label_text(prompt, allowed)
         pred_id = SIB200_LABEL2ID[label_text]
+    else:  # taxi1500
+        text = obj.get("text", {}).get(lang)
+        if text is None:
+            raise RuntimeError(f"Missing text for repair, index={obj.get('index')} lang={lang}")
+        prompt = build_prompt_taxi1500(lang, text)
+        allowed = list(TAXI1500_LABEL2ID.keys())
+        label_text, cand_logits = predictor.predict_label_text(prompt, allowed)
+        pred_id = TAXI1500_LABEL2ID[label_text]
 
     obj.setdefault("orig_pred", {})[lang] = int(pred_id)
     obj.setdefault("orig_pred_text", {})[lang] = label_text
@@ -518,7 +560,7 @@ def apply_targets_for_lang(
         orig_pred = repredict_if_needed(obj, dataset=dataset, lang=lang, predictor=predictor, repair_enabled=repair_enabled)
         preferred = en_target_map.get(idx, None)
         tgt = choose_target(num_labels=num_labels, label=label, orig_pred=orig_pred, preferred=preferred)
-        obj["target_pred"] = {lang: tgt}
+        obj.setdefault("target_pred", {})[lang] = tgt
 
 
 def process_split(
@@ -567,8 +609,9 @@ def process_split(
 
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--data_root", type=str, default="../data_qwen_pred_demo")
-    ap.add_argument("--datasets", nargs="+", default=["xnli", "sib200"])
+    ap.add_argument("--data_root", type=str, default="./data_qwen_pred_demo")
+    ap.add_argument("--datasets", nargs="+", default=["xnli", "sib200", "taxi1500"])
+
     ap.add_argument("--splits", nargs="+", default=["train", "validation", "test"])
     ap.add_argument("--langs", nargs="+", default=["en", "ar", "de", "ru", "sw", "vi", "zh"])
 

@@ -1,58 +1,107 @@
+# MACRO
+
+Multilingual counterfactual generation with preference optimization.
 
 
-## Models
+![Overview](figs/macro.png)
 
-Qwen/Qwen3-8B
-google/gemma-2-9b-it
+## Overview
 
-## 1,Preprocess
-make prediction and target for gemma-2-9b-it
 
-### 1.1 Make Predictions for gemma-2-9b-it
+MACRO is a framework for multilingual counterfactual generation in text classification. Given an input and a model prediction, it aims to produce a minimally edited counterfactual that changes the prediction while preserving as much of the original meaning and form as possible.
 
-Terminal in /preprocess.
-Run run_pred_all.sh
-In addition, you may change the location of the model. 
-SEE run_pred_all.sh
+The pipeline consists of three stages: counterfactual candidate sampling, preference pair ranking, and DPO-based preference alignment. It first generates multiple counterfactual candidates, then ranks them with scores, and finally trains the model to prefer better counterfactuals over worse ones.
+
 
 ```
-chmod +x run_pred_all.sh
-./run_pred_all.sh
+
+## Setup
+
+Install dependencies:
+
+
+```bash
+pip install transformers==4.56.2
+pip install torch==2.8.0 torchvision torchaudio --index-url https://download.pytorch.org/whl/cu128
+pip install soxr accelerate datasets pyyaml wandb peft trl
+pip install -r requirements.txt
 ```
 
-### 1.2 Make Targer for gemma-2-9b-it
+## Pipeline
 
-run:
-```
-python3 make_target.py
-```
+### 1. Preprocess
+Generate model predictions, then build target data for later counterfactual construction.
 
-You may check acc_calculate.ipynb to see the accuracy and align rate with en.
+```bash
+python preprocess/generate_predictions.py \
+  --task <sib200|taxi1500> \
+  --split <train|validation|test> \
+  --lang <en|ar|de|ru|sw|vi|zh> \
+  --out_dir <output_dir> \
+  --local_model_dir <model_dir> \
+  [--resume]
 
-## 2. Sampling for Qwen3-8B
-
-Terminal in /sample
-
-run:
-```
-python generate_counterfactual.py   --pred_root ../data_qwen_pred   --out_root ../data_qwen_sample   --dataset_name sib200   --split train   --language zh   --max_samples 10   --model_name_or_path /root/autodl-tmp/model/Qwen3-8B
-```
-
-or run:
-```
-chmod +x run_sample_all.sh
-./run_sample_all.sh
+python preprocess/make_target.py \
+  --data_root <prediction_dir> \
+  --repair_model_dir <model_dir> \
+  --langs <en|ar|de|ru|sw|vi|zh> \
+  --datasets <sib200|taxi1500> \
+  --splits <train|validation|test>
 ```
 
-check model path
+### 2. Sample
+Generate counterfactual candidates for a dataset, split, and language.
 
-## 3. Reward Calculation
-
-Terminal in /reward
-
-run:
+```bash
+python sample/generate_counterfactual.py \
+  --language <en|ar|de|ru|sw|vi|zh> \
+  --dataset_name <sib200|taxi1500> \
+  --split <train|validation|test> \
+  --num_generations <int>
 ```
-bash run_sample_all.sh
+
+### 3. Rank and train
+First rank sampled candidates into preference pairs, then train with DPO.
+
+```bash
+python train/ranking.py \
+  --task <sib200|taxi1500> \
+  --split <train|validation|test> \
+  --reward_root <reward_dir> \
+  --out_root <triple_dir> \
+  --languages <en|ar|de|ru|sw|vi|zh> \
+  --reward_components <flip|edit|aug> \
+  --reward_weights <name=value ...> \
+  --tag <run_tag>
+
+python train/dpo.py \
+  --task <sib200|taxi1500> \
+  --triple_root <triple_dir> \
+  --languages <en|ar|de|ru|sw|vi|zh> \
+  --model_name_or_path <model_dir_or_hf_name> \
+  --output_dir <run_dir> \
+  --run_name <run_name> \
+  --adapter_root <adapter_root> \
+  --adapter_name <adapter_name> 
 ```
 
-See reward distribution in /reward/test.ipynb
+### 4. Evaluate
+Generate outputs from a trained adapter, then run automatic evaluation.
+
+```bash
+python eval/generate_counterfactual_macro.py \
+  --dataset_name <sib200|taxi1500> \
+  --language <en|ar|de|ru|sw|vi|zh> \
+  --adapter_path <adapter_path> \
+  --out_root <output_dir> \
+  --pred_root <prediction_dir>
+
+python eval/eval_all.py \
+  --data_root <generation_dir> \
+  --task <sib200|taxi1500> \
+  --split <test|validation|train> \
+  --langs <all|lang1 lang2 ...> \
+  --do_ppl --do_sim --do_edit \
+  --classifier_model_dir <model_dir_or_hf_name> \
+  --output_csv <results_csv>
+```
