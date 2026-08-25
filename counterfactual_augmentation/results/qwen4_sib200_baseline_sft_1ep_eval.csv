@@ -1,0 +1,8 @@
+model,condition,dataset,lang,n,n_correct,acc_pct
+qwen4,baseline_sft_1ep,sib200,en,204,184,90.2
+qwen4,baseline_sft_1ep,sib200,ar,204,183,89.7
+qwen4,baseline_sft_1ep,sib200,de,204,193,94.6
+qwen4,baseline_sft_1ep,sib200,ru,204,186,91.2
+qwen4,baseline_sft_1ep,sib200,sw,204,148,72.5
+qwen4,baseline_sft_1ep,sib200,vi,204,189,92.6
+qwen4,baseline_sft_1ep,sib200,zh,204,187,91.7

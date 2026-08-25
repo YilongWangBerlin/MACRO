@@ -1,0 +1,8 @@
+model,condition,dataset,lang,n,n_correct,acc_pct
+gemma4,augmented_paired_acc_sft,sib200,en,204,181,88.7
+gemma4,augmented_paired_acc_sft,sib200,ar,204,183,89.7
+gemma4,augmented_paired_acc_sft,sib200,de,204,181,88.7
+gemma4,augmented_paired_acc_sft,sib200,ru,204,181,88.7
+gemma4,augmented_paired_acc_sft,sib200,sw,204,173,84.8
+gemma4,augmented_paired_acc_sft,sib200,vi,204,181,88.7
+gemma4,augmented_paired_acc_sft,sib200,zh,204,179,87.7

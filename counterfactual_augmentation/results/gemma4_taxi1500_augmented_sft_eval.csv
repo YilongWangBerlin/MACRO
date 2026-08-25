@@ -1,0 +1,8 @@
+model,condition,dataset,lang,n,n_correct,acc_pct
+gemma4,augmented_sft,taxi1500,en,111,88,79.3
+gemma4,augmented_sft,taxi1500,ar,111,89,80.2
+gemma4,augmented_sft,taxi1500,de,111,85,76.6
+gemma4,augmented_sft,taxi1500,ru,111,87,78.4
+gemma4,augmented_sft,taxi1500,sw,111,86,77.5
+gemma4,augmented_sft,taxi1500,vi,111,90,81.1
+gemma4,augmented_sft,taxi1500,zh,111,87,78.4

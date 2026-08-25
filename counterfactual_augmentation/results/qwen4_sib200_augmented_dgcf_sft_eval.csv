@@ -1,0 +1,8 @@
+model,condition,dataset,lang,n,n_correct,acc_pct
+qwen4,augmented_sft_dgcf,sib200,en,204,188,92.2
+qwen4,augmented_sft_dgcf,sib200,ar,204,183,89.7
+qwen4,augmented_sft_dgcf,sib200,de,204,188,92.2
+qwen4,augmented_sft_dgcf,sib200,ru,204,185,90.7
+qwen4,augmented_sft_dgcf,sib200,sw,204,145,71.1
+qwen4,augmented_sft_dgcf,sib200,vi,204,186,91.2
+qwen4,augmented_sft_dgcf,sib200,zh,204,184,90.2
