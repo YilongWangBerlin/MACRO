@@ -1,0 +1,8 @@
+model,dataset,lang,n,acc_before_pct,acc_after_pct,delta_pct
+qwen8,sib200,en,204,82.8,82.4,-0.5
+qwen8,sib200,ar,204,79.9,80.4,0.5
+qwen8,sib200,de,204,78.4,79.4,1.0
+qwen8,sib200,ru,204,81.4,81.9,0.5
+qwen8,sib200,sw,204,60.3,63.2,2.9
+qwen8,sib200,vi,204,82.4,82.4,0.0
+qwen8,sib200,zh,204,77.9,78.4,0.5

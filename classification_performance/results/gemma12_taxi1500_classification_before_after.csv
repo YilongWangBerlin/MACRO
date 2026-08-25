@@ -1,0 +1,8 @@
+model,dataset,lang,n,acc_before_pct,acc_after_pct,delta_pct
+gemma12,taxi1500,en,111,50.5,51.4,0.9
+gemma12,taxi1500,ar,111,59.5,57.7,-1.8
+gemma12,taxi1500,de,111,51.4,50.5,-0.9
+gemma12,taxi1500,ru,111,44.1,44.1,0.0
+gemma12,taxi1500,sw,111,48.6,49.5,0.9
+gemma12,taxi1500,vi,111,46.8,46.8,0.0
+gemma12,taxi1500,zh,111,42.3,42.3,0.0

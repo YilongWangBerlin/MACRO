@@ -1,0 +1,8 @@
+model,condition,dataset,lang,n,n_correct,acc_pct
+qwen8,baseline_sft_1ep,taxi1500,en,111,93,83.8
+qwen8,baseline_sft_1ep,taxi1500,ar,111,90,81.1
+qwen8,baseline_sft_1ep,taxi1500,de,111,90,81.1
+qwen8,baseline_sft_1ep,taxi1500,ru,111,91,82.0
+qwen8,baseline_sft_1ep,taxi1500,sw,111,80,72.1
+qwen8,baseline_sft_1ep,taxi1500,vi,111,88,79.3
+qwen8,baseline_sft_1ep,taxi1500,zh,111,91,82.0

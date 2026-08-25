@@ -1,0 +1,8 @@
+model,condition,dataset,lang,n,n_correct,acc_pct
+qwen4,augmented_paired_sft,sib200,en,204,181,88.7
+qwen4,augmented_paired_sft,sib200,ar,204,180,88.2
+qwen4,augmented_paired_sft,sib200,de,204,180,88.2
+qwen4,augmented_paired_sft,sib200,ru,204,182,89.2
+qwen4,augmented_paired_sft,sib200,sw,204,132,64.7
+qwen4,augmented_paired_sft,sib200,vi,204,179,87.7
+qwen4,augmented_paired_sft,sib200,zh,204,180,88.2

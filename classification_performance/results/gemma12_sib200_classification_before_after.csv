@@ -1,0 +1,8 @@
+model,dataset,lang,n,acc_before_pct,acc_after_pct,delta_pct
+gemma12,sib200,en,204,87.7,86.8,-1.0
+gemma12,sib200,ar,204,88.2,88.7,0.5
+gemma12,sib200,de,204,89.7,89.7,0.0
+gemma12,sib200,ru,204,88.7,88.2,-0.5
+gemma12,sib200,sw,204,85.3,84.8,-0.5
+gemma12,sib200,vi,204,89.2,88.7,-0.5
+gemma12,sib200,zh,204,85.8,86.3,0.5

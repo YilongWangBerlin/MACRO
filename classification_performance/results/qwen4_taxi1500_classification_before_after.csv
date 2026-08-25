@@ -1,0 +1,8 @@
+model,dataset,lang,n,acc_before_pct,acc_after_pct,delta_pct
+qwen4,taxi1500,en,111,36.0,37.8,1.8
+qwen4,taxi1500,ar,111,44.1,45.0,0.9
+qwen4,taxi1500,de,111,29.7,33.3,3.6
+qwen4,taxi1500,ru,111,35.1,37.8,2.7
+qwen4,taxi1500,sw,111,18.9,21.6,2.7
+qwen4,taxi1500,vi,111,36.0,37.8,1.8
+qwen4,taxi1500,zh,111,38.7,41.4,2.7
